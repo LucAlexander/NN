@@ -23,9 +23,10 @@ void modelSetup(Model* m, uint32_t n, ...){
 	m->flags = 0;
 	va_list v;
 	va_start(v, n);
-	while(n>0){
-		m->numNodes[n-1] = va_arg(v, uint32_t);
-		n--;
+	uint32_t i = 0;
+	while(i<n){
+		m->numNodes[i] = va_arg(v, uint32_t);
+		i++;
 	}
 	va_end(v);
 }
@@ -90,18 +91,62 @@ void modelPass(Model* m, float input[], float expectedOutput[]){
 	float output[n];
 	memcpy(output, m->node[n], sizeof(float)*n);
 	m->loss = modelCallLossFunction(m->lossFunction, n, output, expectedOutput);
-	// TODO OPTIMIZATION
+	// TODO gradient descent optimization on w, b
 }
 
 void modelNodesPass(Model* m, uint32_t i, uint32_t n, uint32_t n0){
-	float nodeVal;
-	uint32_t k;
+	pthread_mutex_t lock;
+	pthread_mutex_init(&lock, NULL);
+	pthread_t threads[n];
+	uint32_t argSize = sizeof(NodeThreadParams);
+	NodeThreadParams* args[n];
+	uint32_t k, err;
 	for (k = 0;k<n;++k){
-		nodeVal = modelCalculateNode(m, i, k, n0);
-		nodeVal += m->bias[i][k];
-		m->node[i][k] = modelActivationFunction(m, nodeVal, i, n);
+		NodeThreadParams* arg = malloc(argSize);
+		memset(arg, 0, argSize);
+		args[k] = arg;
+		setNodeThreadParams(arg, m, i, k, n, n0, &lock);
+		err = pthread_create(&threads[k], NULL, &modelNodeThread, (void*)arg);
+		if (err){
+			printf("Could not create thread %u, exit code %u\n",k,err);
+		}
+	}
+	for (k = 0;k<n;++k){
+		pthread_join(threads[k], NULL);
+	}
+	pthread_mutex_destroy(&lock);
+	for (k = 0;k<n;++k){
+		free(args[k]);
+		args[k] = NULL;
 	}
 	modelActivationFunctionPost(m, i, n);
+}
+
+void setNodeThreadParams(NodeThreadParams* arg, Model* m, uint32_t i, uint32_t k, uint32_t n, uint32_t n0, pthread_mutex_t* lock){
+	arg->m = m;
+	arg->i = i;
+	arg->k = k;
+	arg->n = n;
+	arg->n0 = n0;
+	arg->lock = lock;
+}
+
+void* modelNodeThread(void* args){
+	uint32_t i, k, n, n0;
+	float nodeVal;
+	NodeThreadParams* argList = args;
+	Model* m = argList->m;
+	i = argList->i;
+	k = argList->k;
+	n = argList->n;
+	n0 = argList->n0;
+	pthread_mutex_t* lock = argList->lock;
+	pthread_mutex_lock(lock);
+	nodeVal = modelCalculateNode(m, i, k, n0);
+	nodeVal += m->bias[i][k];
+	m->node[i][k] = modelActivationFunction(m, nodeVal, i, n);
+	pthread_mutex_unlock(lock);
+	pthread_exit(NULL);
 }
 
 float modelActivationFunction(Model* m, float nodeVal, uint32_t i, uint32_t n){

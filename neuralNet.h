@@ -2,12 +2,13 @@
 #define NEURAL_NET_H
 
 #include <inttypes.h>
+#include <pthread.h>
 
 #define MAX_LAYERS 8
 #define MAX_NODES 32
 #define E 2.71828
 #define RELU_LEAK_A 0.01
-#define HUBER_DELTA 1
+#define HUBER_DELTA 1.35
 
 typedef struct Model{
 	uint32_t numLayers;
@@ -35,6 +36,17 @@ typedef struct Model{
 	 */
 	uint8_t flags;
 }Model;
+
+typedef struct NodeThreadParams{
+	Model* m;
+	uint32_t i;
+	uint32_t k;
+	uint32_t n;
+	uint32_t n0;
+	pthread_mutex_t* lock;
+}NodeThreadParams;
+
+void setNodeThreadParams(NodeThreadParams* arg, Model* m, uint32_t i, uint32_t k, uint32_t n, uint32_t n0, pthread_mutex_t* lock);
 
 enum WEIGHT_INIT{
 	HE,
@@ -76,6 +88,8 @@ float modelActivationFunction(Model* m,float nodeVal, uint32_t layerIndex, uint3
 void modelActivationFunctionPost(Model* m, uint32_t layerIndex, uint32_t nodeCount);
 float modelCallActivationFunction(Model* m, uint32_t function, float nodeVal, uint32_t i, uint32_t n);
 float modelCallLossFunction(uint32_t function, uint32_t n, float output[], float expected[]);
+
+void* modelNodeThread(void* arg);
 
 float* modelOutput(Model* m);
 void printState(Model* m);
