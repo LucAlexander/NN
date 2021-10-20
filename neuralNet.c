@@ -9,12 +9,12 @@
 
 void modelSetup(Model* m, uint32_t n, ...){
 	startRandSeed();
+	n = min(n, MAX_LAYERS);
 	m->numLayers = n;
 	m->outputIndex = n-1;
 	memset(m->numNodes, 0, sizeof(m->numNodes));
 	memset(m->node, 0, sizeof(m->node));
 	memset(m->bias, 0, sizeof(m->bias));
-	memset(m->weight, 0, sizeof(m->weight));
 	m->weightInit = HE_UNIFORM;
 	m->hiddenActivation = RELU;
 	m->outputActivation = SIGMOID;
@@ -23,12 +23,16 @@ void modelSetup(Model* m, uint32_t n, ...){
 	m->flags = 0;
 	va_list v;
 	va_start(v, n);
+	uint32_t maxCount = 0;
 	uint32_t i = 0;
 	while(i<n){
 		m->numNodes[i] = va_arg(v, uint32_t);
+		maxCount = max(maxCount, m->numNodes[i]);
 		i++;
 	}
 	va_end(v);
+	maxCount = min(maxCount, MAX_NODES);
+	m->weight = calloc((n*maxCount*maxCount),sizeof(float));
 }
 
 void modelInitialConditions(Model* m){
@@ -38,7 +42,8 @@ void modelInitialConditions(Model* m){
 		n = m->numNodes[i];
 		for (k = 0;k<n;++k){
 			for (t = 0;t<n0;++t){
-				m->weight[i-1][k][t] = modelCallWeightInitFunction(m->weightInit, n, n0);
+				//m->weight[i-1][k][t] = modelCallWeightInitFunction(m->weightInit, n, n0);
+				m->weight[m->numLayers*(k+(t*n))+i-1] = modelCallWeightInitFunction(m->weightInit, n, n0);
 			}
 		}
 		n0 = n;
@@ -142,7 +147,7 @@ void* modelNodeThread(void* args){
 	n0 = argList->n0;
 	pthread_mutex_t* lock = argList->lock;
 	pthread_mutex_lock(lock);
-	nodeVal = modelCalculateNode(m, i, k, n0);
+	nodeVal = modelCalculateNode(m, i, k, n, n0);
 	nodeVal += m->bias[i][k];
 	m->node[i][k] = modelActivationFunction(m, nodeVal, i, n);
 	pthread_mutex_unlock(lock);
@@ -193,11 +198,12 @@ float modelCallActivationFunction(Model* m, uint32_t function, float nodeVal, ui
 	return nodeVal;
 }
 
-float modelCalculateNode(Model* m, uint32_t i, uint32_t k, uint32_t n0){
+float modelCalculateNode(Model* m, uint32_t i, uint32_t k, uint32_t n, uint32_t n0){
 	float nodeVal = 0.0;
 	uint32_t t;
 	for (t = 0;t<n0;++t){
-		nodeVal += m->weight[i-1][k][t]*m->node[i-1][t];
+		//nodeVal += m->weight[i-1][k][t]*m->node[i-1][t];
+		nodeVal += m->weight[m->numLayers*(k+(t*n))+i-1]*m->node[i-1][t];
 	}
 	return nodeVal;
 }
@@ -288,7 +294,7 @@ void activationSoftmax(Model* m, uint32_t i, uint32_t n){
 	float ymax = 0.0;
 	for (k = 0;k<n;++k){
 		float yi = pow(E, m->node[i][k]);
-		ymax = dmax(ymax, yi);
+		ymax = maxf(ymax, yi);
 		m->node[i][k] = yi;
 	}
 	for (k = 0;k<n;++k){
@@ -313,21 +319,35 @@ float activationReLuLeaky(float x){
 }
 
 float activationReLu(float x){
-	return dmax(0, x);
+	return maxf(0, x);
 }
 
 float activationTanH(float x){
 	return 2*activationSigmoid(2*x)-1;
 }
 
-float dmax(float a, float b){
+float maxf(float a, float b){
 	if (a>b){
 		return a;
 	}
 	return b;
 }
 
-float dmin(float a, float b){
+float minf(float a, float b){
+	if (a<b){
+		return a;
+	}
+	return b;
+}
+
+int64_t max(int64_t a, int64_t b){
+	if (a<b){
+		return b;
+	}
+	return a;
+}
+
+int64_t min(int64_t a, int64_t b){
 	if (a<b){
 		return a;
 	}
@@ -402,7 +422,7 @@ float lossHinge(uint32_t n, float* output, float* expected){
 	uint32_t i;
 	float sum = 0.0;
 	for (i=0;i<n;++i){
-		sum+=dmax(0, expected[i]-output[i]+1);
+		sum+=maxf(0, expected[i]-output[i]+1);
 	}
 	return sum/n;
 }

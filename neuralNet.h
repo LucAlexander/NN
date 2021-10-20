@@ -5,7 +5,7 @@
 #include <pthread.h>
 
 #define MAX_LAYERS 8
-#define MAX_NODES 32
+#define MAX_NODES 256
 #define E 2.71828
 #define RELU_LEAK_A 0.01
 #define HUBER_DELTA 1.35
@@ -19,8 +19,9 @@ typedef struct Model{
 	/* WEIGHT DIMENSIONS
 	 * layers x nodes in layer x input weights
 	 * first index in layers is first hidden layer not input
+	 * [i][k][t] = layers*(k+(t*numNodes))+i
 	 */
-	float weight[MAX_LAYERS][MAX_NODES][MAX_NODES];
+	float* weight;
 	float expectedOutput[MAX_NODES];
 	// WEIGHT GEN enum
 	uint32_t weightInit;
@@ -83,7 +84,7 @@ void modelSetFunctions(Model* m, uint32_t weightInit, uint32_t hidden, uint8_t p
 
 void modelPass(Model* m, float input[], float expectedOutput[]);
 void modelNodesPass(Model* m, uint32_t layer, uint32_t nodeCount, uint32_t prevNodeCount);
-float modelCalculateNode(Model* m, uint32_t layer, uint32_t node, uint32_t n0);
+float modelCalculateNode(Model* m, uint32_t layer, uint32_t node, uint32_t n, uint32_t n0);
 float modelActivationFunction(Model* m,float nodeVal, uint32_t layerIndex, uint32_t nodeCount);
 void modelActivationFunctionPost(Model* m, uint32_t layerIndex, uint32_t nodeCount);
 float modelCallActivationFunction(Model* m, uint32_t function, float nodeVal, uint32_t i, uint32_t n);
@@ -108,8 +109,11 @@ float activationReLuLeaky(float x);
 float activationReLu(float x);
 float activationTanH(float x);
 
-float dmax(float a, float b);
-float dmin(float a, float b);
+float maxf(float a, float b);
+float minf(float a, float b);
+
+int64_t max(int64_t a, int64_t b);
+int64_t min(int64_t a, int64_t b);
 
 // REGRESSION LOSS
 float lossMeanAbsoluteError(uint32_t n, float* output, float* expected);
