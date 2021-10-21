@@ -81,6 +81,7 @@ void modelSetup(Model* m, uint32_t n, ...);
 void modelInitialConditions(Model* m);
 float modelCallWeightInitFunction(uint32_t function, uint32_t n, uint32_t n0);
 void modelSetFunctions(Model* m, uint32_t weightInit, uint32_t hidden, uint8_t postHidden, uint32_t output, uint8_t postOutput, uint32_t lossFunction);
+void modelClose(Model* m);
 
 void modelPass(Model* m, float input[], float expectedOutput[]);
 void modelNodesPass(Model* m, uint32_t layer, uint32_t nodeCount, uint32_t prevNodeCount);

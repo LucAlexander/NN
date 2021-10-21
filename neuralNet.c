@@ -83,6 +83,11 @@ void modelSetFunctions(Model* m, uint32_t weightInit, uint32_t hidden, uint8_t p
 	modelInitialConditions(m);
 }
 
+void modelClose(Model* m){
+	free(m->weight);
+	m->weight = NULL;
+}
+
 void modelPass(Model* m, float input[], float expectedOutput[]){
 	uint32_t i, n, n0;
 	n0 = m->numNodes[0];

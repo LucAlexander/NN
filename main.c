@@ -18,10 +18,11 @@ int main(void){
 		modelPass(&m, input, expected);
 		float currentTime = (double)clock()-timeCurrent;
 		float totalTime = (double)clock()-timer;
-		printf("completed pass %u in %fms Total Elapsed Time: %fms\n",i,currentTime/CLOCKS_PER_SEC,totalTime/CLOCKS_PER_SEC);
+		printf("completed pass %u in %fms Total Elapsed Time: %fms\n",i,(currentTime/CLOCKS_PER_SEC)*1000,(totalTime/CLOCKS_PER_SEC)*1000);
 	}
 	float* output = modelOutput(&m);
 	//printState(&m);
+	modelClose(&m);
 	printf("exit\n");
 	return 0;
 }
