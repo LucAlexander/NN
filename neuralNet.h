@@ -142,6 +142,15 @@ float lossHuber(uint32_t n, float* output, float* expected);
 float lossBinaryCrossEntropy(uint32_t n, float* output, float* expected);
 float lossHinge(uint32_t n, float* output, float* expected);
 
+// LOSS PARTIAL DERIVATIVES
+float dldxMeanAbsoluteError(uint32_t n, float* output, float* expected, float var);
+float dldxMeanSquaredError(uint32_t n, float* output, float* expected, float var);
+float dldxMeanBiasError(uint32_t n, float* output, float* expected, float var);
+float dldxMeanSquaredLogError(uint32_t n, float* output, float* expected, float var);
+float dldxHuber(uint32_t n, float* output, float* expected, float var);
+float dldxBinaryCrossEntropy(uint32_t n, float* output, float* expected, float var);
+float dldxHinge(uint32_t n, float* output, float* expected, float var);
+
 void gradientDescent(Model* m, float* input, float* expected, float* output);
 float dldw(float* input, float* expected, float* output, uint32_t n);
 float dldb(float* expected, float* output, uint32_t n);
