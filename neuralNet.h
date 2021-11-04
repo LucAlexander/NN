@@ -5,10 +5,12 @@
 #include <pthread.h>
 
 #define MAX_LAYERS 8
-#define MAX_NODES 256
+#define MAX_NODES 1024
 #define E 2.71828
 #define RELU_LEAK_A 0.01
 #define HUBER_DELTA 1.35
+#define LEARNING_RATE 0.0001
+#define READ_BUFFER_SIZE 1024
 
 typedef struct Model{
 	uint32_t numLayers;
@@ -47,6 +49,18 @@ typedef struct NodeThreadParams{
 	pthread_mutex_t* lock;
 }NodeThreadParams;
 
+typedef struct DataSet{
+	float** X;
+	float** Y;
+	uint32_t n;
+	uint32_t m;
+}DataSet;
+
+DataSet* readDataSet(const int8_t* fileName);
+uint32_t getDataVectorLength(int8_t buffer[]);
+float* parseFloatVector(int8_t buffer[], uint32_t n);
+void closeDataSet(DataSet* d);
+
 void setNodeThreadParams(NodeThreadParams* arg, Model* m, uint32_t i, uint32_t k, uint32_t n, uint32_t n0, pthread_mutex_t* lock);
 
 enum WEIGHT_INIT{
@@ -83,6 +97,7 @@ float modelCallWeightInitFunction(uint32_t function, uint32_t n, uint32_t n0);
 void modelSetFunctions(Model* m, uint32_t weightInit, uint32_t hidden, uint8_t postHidden, uint32_t output, uint8_t postOutput, uint32_t lossFunction);
 void modelClose(Model* m);
 
+void modelTrain(Model* m, DataSet* d);
 void modelPass(Model* m, float input[], float expectedOutput[]);
 void modelNodesPass(Model* m, uint32_t layer, uint32_t nodeCount, uint32_t prevNodeCount);
 float modelCalculateNode(Model* m, uint32_t layer, uint32_t node, uint32_t n, uint32_t n0);
@@ -126,5 +141,11 @@ float lossHuber(uint32_t n, float* output, float* expected);
 // CLASSIFICATION LOSS
 float lossBinaryCrossEntropy(uint32_t n, float* output, float* expected);
 float lossHinge(uint32_t n, float* output, float* expected);
+
+void gradientDescent(Model* m, float* input, float* expected, float* output);
+float dldw(float* input, float* expected, float* output, uint32_t n);
+float dldb(float* expected, float* output, uint32_t n);
+void updateWeights(Model* m, float dx);
+void updateBiases(Model* m, float dx);
 
 #endif

@@ -1,6 +1,7 @@
 #include "neuralNet.h"
 #include "rng.h"
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <math.h>
 #include <stddef.h>
@@ -42,7 +43,6 @@ void modelInitialConditions(Model* m){
 		n = m->numNodes[i];
 		for (k = 0;k<n;++k){
 			for (t = 0;t<n0;++t){
-				//m->weight[i-1][k][t] = modelCallWeightInitFunction(m->weightInit, n, n0);
 				m->weight[m->numLayers*(k+(t*n))+i-1] = modelCallWeightInitFunction(m->weightInit, n, n0);
 			}
 		}
@@ -88,11 +88,23 @@ void modelClose(Model* m){
 	m->weight = NULL;
 }
 
+void modelTrain(Model* m, DataSet* d){
+	uint32_t i;
+	clock_t timer = clock();
+	for (i=0;i<d->n;++i){
+		clock_t timeCurrent = clock();
+		modelPass(m, d->X[i], d->Y[i]);
+		float currentTime = (double)clock()-timeCurrent;
+		float totalTime = (double)clock()-timer;
+		printf("completed pass %u in %.0fms Total Elapsed Time: %fms | Loss: %f\n",i,(currentTime/CLOCKS_PER_SEC)*1000,(totalTime/CLOCKS_PER_SEC)*1000,m->loss);
+	}
+	closeDataSet(d);
+}
+
 void modelPass(Model* m, float input[], float expectedOutput[]){
 	uint32_t i, n, n0;
 	n0 = m->numNodes[0];
 	memcpy(m->node[0], input, sizeof(float)*n0);
-	memcpy(m->expectedOutput, expectedOutput, sizeof(float)*m->numNodes[m->outputIndex]);
 	for (i = 1;i<m->numLayers;++i){
 		n = m->numNodes[i];
 		modelNodesPass(m, i, n, n0);
@@ -101,7 +113,7 @@ void modelPass(Model* m, float input[], float expectedOutput[]){
 	float output[n];
 	memcpy(output, m->node[n], sizeof(float)*n);
 	m->loss = modelCallLossFunction(m->lossFunction, n, output, expectedOutput);
-	// TODO gradient descent optimization on w, b
+	//gradientDescent(m, input, expectedOutput, output);
 }
 
 void modelNodesPass(Model* m, uint32_t i, uint32_t n, uint32_t n0){
@@ -432,3 +444,159 @@ float lossHinge(uint32_t n, float* output, float* expected){
 	return sum/n;
 }
 
+void gradientDescent(Model* m, float* input, float* expected, float* output){
+	uint32_t n = m->numNodes[m->outputIndex];
+	float dx = dldw(input, expected, output, n);
+	updateWeights(m, dx);
+	dx = dldb(expected, output, n);
+	updateBiases(m, dx);
+	//TODO fix this, it does the oposite of optimize
+}
+
+void updateWeights(Model* m, float dx){
+	uint32_t i, k, t, n, index;
+	uint32_t n0 = m->numNodes[0];
+	for (i = 1;i<m->numLayers;++i){
+		n = m->numNodes[i];
+		for (k = 0;k<n;++k){
+			for (t = 0;t<n0;++t){
+				index = m->numLayers*(k+(t*n)+i-1);
+				m->weight[index] -= LEARNING_RATE*dx;
+			}
+		}
+		n0=n;
+	}
+}
+
+void updateBiases(Model* m, float dx){
+	uint32_t i, k, n;
+	for (i = 1;i<m->numLayers;++i){
+		n = m->numNodes[i];
+		for (k = 0;k<n;++k){
+			m->bias[i][k] -= LEARNING_RATE*dx;
+		}
+	}
+}
+
+float dldw(float* input, float* expected, float* output, uint32_t n){
+	// TODO formalize derivative with respect to w
+	float s = 0;
+	uint32_t i;
+	for (i = 0;i<n;++i){
+		s+=input[i]+(expected[i]-output[i]);
+	}
+	return (2/n)*s;
+}
+	
+float dldb(float* expected, float* output, uint32_t n){
+	float s = 0;
+	uint32_t i;
+	for (i = 0;i<n;++i){
+		s += (expected[i]-output[i]);
+	}
+	return (2/n)*s;
+}
+
+DataSet* readDataSet(const int8_t* fileName){
+	FILE* fin;
+	fin = fopen(fileName, "r");
+	if (fin==NULL){
+		printf("Data set file %s not found\n",fileName);
+		fclose(fin);
+		return NULL;
+	}
+	DataSet* d = malloc(sizeof(DataSet));
+	d->X=NULL;
+	d->Y=NULL;
+	d->n=0;
+	d->m=0;
+	int8_t buffer[READ_BUFFER_SIZE];
+	while(fgets(buffer, READ_BUFFER_SIZE, fin)!=NULL){
+		if (d->m==0){
+			d->m=getDataVectorLength(buffer);
+		}
+		d->n++;
+	}
+	fclose(fin);
+	d->n/=2;
+	d->X=malloc(d->n*sizeof(float*));
+	d->Y=malloc(d->n*sizeof(float*));
+	uint32_t i = 0;
+	for (i = 0;i<d->n;++i){
+		d->X[i]=malloc(d->m*sizeof(float));
+		d->Y[i]=malloc(d->m*sizeof(float));
+	}
+	fin = fopen(fileName, "r");
+	i=0;
+	while(fgets(buffer, READ_BUFFER_SIZE, fin)!=NULL){
+		d->X[i]=parseFloatVector(buffer, d->m);
+		fgets(buffer, READ_BUFFER_SIZE, fin);
+		d->Y[i++]=parseFloatVector(buffer, d->m);
+	}
+	fclose(fin);
+	return d;
+}
+
+uint32_t getDataVectorLength(int8_t buffer[]){
+	uint32_t i=0;
+	uint32_t n=0;
+	uint8_t f = 0;
+	int8_t c = ' ';
+	while (c!='\0'&&c!='\n'){
+		c = buffer[i++];
+		if(c==','){
+			n++;
+		}
+		f = 1;
+	}
+	return n+f;
+}
+
+float* parseFloatVector(int8_t buffer[], uint32_t n){
+	uint32_t i=0;
+	uint32_t k=0;
+	uint32_t j=0;
+	int8_t c = ' ';
+	int8_t s[sizeof(float)*8];
+	// Logic behind previous line is that 
+	// you're not gonna have a float
+	// represented in the input buffer
+	// (base ten) wider than the bit width
+	// of a float
+	float* vector = malloc(sizeof(float)*n);
+	while(c!='\n'&&c!='\0'){
+		c=buffer[i++];
+		if (c==','){
+			s[k] = '\0';
+			vector[j++]=atof(s);
+			memset(buffer, 0, strlen(buffer));
+			k = 0;
+			continue;
+		}
+		if (c!=' '){
+			s[k++] = c;
+		}
+	}
+	s[k]='\0';
+	vector[j]=atof(s);
+	return vector;
+}
+
+void closeDataSet(DataSet* d){
+	if (d==NULL){
+		return;
+	}
+	uint32_t i;
+	for (i=0;i<d->n;++i){
+		free(d->X[i]);
+		free(d->Y[i]);
+		d->X[i] = NULL;
+		d->Y[i] = NULL;
+	}
+	free(d->X);
+	free(d->Y);
+	d->X = NULL;
+	d->Y = NULL;
+	free(d);
+	d=NULL;
+}
