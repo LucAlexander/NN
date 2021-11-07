@@ -16,6 +16,8 @@ void modelSetup(Model* m, uint32_t n, ...){
 	memset(m->numNodes, 0, sizeof(m->numNodes));
 	memset(m->node, 0, sizeof(m->node));
 	memset(m->bias, 0, sizeof(m->bias));
+	memset(m->sums, 0, sizeof(m->sums));
+	memset(m->losses, 0, sizeof(m->losses));
 	m->weightInit = HE_UNIFORM;
 	m->hiddenActivation = RELU;
 	m->outputActivation = SIGMOID;
@@ -96,7 +98,7 @@ void modelTrain(Model* m, DataSet* d){
 		modelPass(m, d->X[i], d->Y[i]);
 		float currentTime = (double)clock()-timeCurrent;
 		float totalTime = (double)clock()-timer;
-		printf("completed pass %u in %.0fms Total Elapsed Time: %.0fms | Loss: %.2f\n",i,(currentTime/CLOCKS_PER_SEC)*1000,(totalTime/CLOCKS_PER_SEC)*1000,m->loss);
+		if (i%500==0) printf("completed pass %u in %.0fms Total Elapsed Time: %.0fms | Loss: %.2f\n",i,(currentTime/CLOCKS_PER_SEC)*1000,(totalTime/CLOCKS_PER_SEC)*1000,m->loss);
 	}
 	closeDataSet(d);
 }
@@ -112,8 +114,10 @@ void modelPass(Model* m, float input[], float expectedOutput[]){
 	}
 	float output[n];
 	memcpy(output, m->node[n], sizeof(float)*n);
-	m->loss = modelCallLossFunction(m->lossFunction, n, output, expectedOutput);
-	//gradientDescent(m, input, expectedOutput, output);
+	m->loss = modelCallLossFunction(m->lossFunction, m->losses, n, output, expectedOutput);
+	// TODO MULTITHREAD WHEN IT WORKS
+	// TODO FIX IT
+	gradientDescent(m, input, expectedOutput, output);
 }
 
 void modelNodesPass(Model* m, uint32_t i, uint32_t n, uint32_t n0){
@@ -166,6 +170,7 @@ void* modelNodeThread(void* args){
 	pthread_mutex_lock(lock);
 	nodeVal = modelCalculateNode(m, i, k, n, n0);
 	nodeVal += m->bias[i][k];
+	m->sums[i][k] = nodeVal;
 	m->node[i][k] = modelActivationFunction(m, nodeVal, i, n);
 	pthread_mutex_unlock(lock);
 	pthread_exit(NULL);
@@ -225,30 +230,31 @@ float modelCalculateNode(Model* m, uint32_t i, uint32_t k, uint32_t n, uint32_t 
 	return nodeVal;
 }
 
-float modelCallLossFunction(uint32_t function, uint32_t n, float output[], float expected[]){
+float modelCallLossFunction(uint32_t function, float* losses, uint32_t n, float output[], float expected[]){
 	switch(function){
 		case MAE:
-			return lossMeanAbsoluteError(n, output, expected);
+			return lossMeanAbsoluteError(n, losses, output, expected);
 		break;
 		case MSE:
-			return lossMeanSquaredError(n, output, expected);
+			return lossMeanSquaredError(n, losses, output, expected);
 		break;
 		case MBE:
-			return lossMeanBiasError(n, output, expected);
+			return lossMeanBiasError(n, losses, output, expected);
 		break;
 		case MSLE:
-			return lossMeanSquaredLogError(n, output, expected);
+			return lossMeanSquaredLogError(n, losses, output, expected);
 		break;
 		case HUBER:
-			return lossHuber(n, output, expected);
+			return lossHuber(n, losses, output, expected);
 		break;
 		case BINARY_CROSS_ENTROPY:
-			return lossBinaryCrossEntropy(n, output, expected);
+			return lossBinaryCrossEntropy(n, losses, output, expected);
 		break;
 		case HINGE:
-			return lossHinge(n, output, expected);
+			return lossHinge(n, losses, output, expected);
 		break;
 	}
+	return 1;
 }
 
 float* modelOutput(Model* m){
@@ -343,6 +349,27 @@ float activationTanH(float x){
 	return 2*activationSigmoid(2*x)-1;
 }
 
+float ddxSigmoid(float x){
+	float b = activationSigmoid(x);
+	return b*(1-b);
+}
+
+float ddxReLu(float x){
+	return 1;
+}
+
+float ddxReLuLeaky(float x){
+	if (x>=0){
+		return 1;
+	}
+	return x;
+}
+
+float ddxTanH(float x){
+	float b = activationSigmoid(2*x);
+	return b*(b*(1-b));
+}
+
 float maxf(float a, float b){
 	if (a>b){
 		return a;
@@ -371,203 +398,228 @@ int64_t min(int64_t a, int64_t b){
 	return b;
 }
 
-float lossMeanAbsoluteError(uint32_t n, float* output, float* expected){
+float lossMeanAbsoluteError(uint32_t n, float* losses, float* output, float* expected){
 	uint32_t i;
 	float sum = 0.0;
 	for (i = 0;i<n;++i){
-		sum += abs(output[i]-expected[i]);
-	}
-	return sum/n;
-}
-
-float lossMeanSquaredError(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float sum = 0.0;
-	for (i = 0;i<n;++i){
-		sum += pow(expected[i]-output[i],2);
-	}
-	return sum/n;
-}
-
-float lossMeanBiasError(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float sum = 0.0;
-	for (i = 0;i<n;++i){
-		sum += expected[i]-output[i];
-	}
-	return sum/n;
-}
-
-float lossMeanSquaredLogError(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float sum = 0.0;
-	for (i = 0;i<n;++i){
-		sum += pow(log(expected[i])-log(output[i]), 2);
-	}
-	return sum/n;
-}
-
-float lossHuber(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float sum = 0.0;
-	for (i = 0;i<n;++i){
-		float a = expected[i]-output[i];
-		if (abs(a) <= HUBER_DELTA){
-			sum += 0.5*pow(a, 2);
-			continue;
-		}
-		sum += HUBER_DELTA*(abs(a)-(0.5*HUBER_DELTA));
-	}
-	return sum/n;
-}
-
-float lossBinaryCrossEntropy(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float y, x;
-	float sum = 0.0;
-	for (i = 0;i<n;++i){
-		y = expected[i];
-		x = output[i];
-		sum += y*log(x);
-		sum += (1-y)*log(1-x);
-	}
-	return -(sum/n);
-}
-
-float lossHinge(uint32_t n, float* output, float* expected){
-	uint32_t i;
-	float sum = 0.0;
-	for (i=0;i<n;++i){
-		sum+=maxf(0, expected[i]-output[i]+1);
-	}
-	return sum/n;
-}
-
-float dldxMeanAbsoluteError(uint32_t n, float* output, float* expected, float var){
-	uint32_t i;
-	float sum = 0.0;
-	for (i=0;i<n;++i){
-		float a = output[i]-expected[i];
-		sum += -var*(a/abs(a));
-	}
-	return sum/n;
-}
-
-float dldxMeanSquaredError(uint32_t n, float* output, float* expected, float var){
-	uint32_t i;
-	float sum = 0.0;
-	for (i=0;i<n;++i){
-		sum += -var*(expected[i]-output[i]);
-	}
-	return (2*sum)/n;
-}
-
-float dldxMeanBiasError(uint32_t n, float* output, float* expected, float var){
-	uint32_t i;
-	float sum = 0.0;
-	for (i=0;i<n;++i){
-		sum += -var;
-	}
-	return sum/n;
-}
-
-float dldxMeanSquaredLogError(uint32_t n, float* output, float* expected, float var){
-	uint32_t i;
-	float sum = 0.0;
-	for (i=0;i<n;++i){
-		float a = (-2*var)/output[i];
-		a = (log(expected[i])-log(output[i]));
+		float a = abs(output[i]-expected[i]);
 		sum += a;
+		losses[i] = a/n;
 	}
 	return sum/n;
 }
 
-float dldxHuber(uint32_t n, float* output, float* expected, float var){
+float lossMeanSquaredError(uint32_t n, float* losses, float* output, float* expected){
+	uint32_t i;
+	float sum = 0.0;
+	for (i = 0;i<n;++i){
+		float a = pow(expected[i]-output[i],2);
+		sum += a;
+		losses[i] = a/n;
+	}
+	return sum/n;
+}
+
+float lossMeanBiasError(uint32_t n, float* losses, float* output, float* expected){
+	uint32_t i;
+	float sum = 0.0;
+	for (i = 0;i<n;++i){
+		float a = expected[i]-output[i];
+		sum += a;
+		losses[i] = a/n;
+	}
+	return sum/n;
+}
+
+float lossMeanSquaredLogError(uint32_t n, float* losses, float* output, float* expected){
+	uint32_t i;
+	float sum = 0.0;
+	for (i = 0;i<n;++i){
+		float a = pow(log(expected[i])-log(output[i]), 2);
+		sum += a;
+		losses[i] = a/n;
+	}
+	return sum/n;
+}
+
+float lossHuber(uint32_t n, float* losses, float* output, float* expected){
 	uint32_t i;
 	float sum = 0.0;
 	for (i = 0;i<n;++i){
 		float a = expected[i]-output[i];
 		if (abs(a) <= HUBER_DELTA){
-			sum += -var*a;
+			float b = 0.5*pow(a, 2);
+			sum += b;
+			losses[i] = b/n;
 			continue;
 		}
-		sum += (-var*HUBER_DELTA*a)/abs(a);
+		float b = HUBER_DELTA*(abs(a)-(0.5*HUBER_DELTA));
+		sum += b;
+		losses[i] = b/n;
 	}
 	return sum/n;
 }
 
-float dldxBinaryCrossEntropy(uint32_t n, float* output, float* expected, float var){
+float lossBinaryCrossEntropy(uint32_t n, float* losses, float* output, float* expected){
 	uint32_t i;
 	float y, x;
 	float sum = 0.0;
 	for (i = 0;i<n;++i){
 		y = expected[i];
 		x = output[i];
-		sum += (y*var)/x;
-		sum += ((1-y)*var)/(1-x);
+		float a = y*log(x);
+		a += (1-y)*log(1-x);
+		sum += a;
+		losses[i] = -a/n;
 	}
 	return -(sum/n);
 }
 
-float dldxHinge(uint32_t n, float* output, float* expected, float var){
+float lossHinge(uint32_t n, float* losses, float* output, float* expected){
 	uint32_t i;
 	float sum = 0.0;
 	for (i=0;i<n;++i){
-		sum += maxf(0, -var);
+		float a = maxf(0, expected[i]-output[i]+1);
+		sum += a;
+		losses[i] = a/n;
 	}
 	return sum/n;
+}
+
+float dldxMeanAbsoluteError(uint32_t n, float x, float y){
+	return (x-y)/(n*abs(x-y));
+}
+
+float dldxMeanSquaredError(uint32_t n, float x, float y){
+	return (-2*(y-x))/n;
+}
+
+float dldxMeanBiasError(uint32_t n, float x, float y){
+	return -1/n;
+}
+
+float dldxMeanSquaredLogError(uint32_t n, float x, float y){
+	return (-2*(log(y)-log(x)))/(n*x);
+}
+
+float dldxHuber(uint32_t n, float x, float y){
+	float a = abs(y-x);
+	if (a<=HUBER_DELTA){
+		return x-y;
+	}
+	return (-HUBER_DELTA*(y-x))/a;
+}
+
+float dldxBinaryCrossEntropy(uint32_t n, float x, float y){
+	return (-y/(n*x))-((1-y)/(1-x));
+}
+
+float dldxHinge(uint32_t n, float x, float y){
+	return max(0, -x)/n;
+}
+
+float dsdw(Model* m, uint32_t i, uint32_t k){
+	return m->node[i][k];
+}
+
+float dsdo(Model* m, uint32_t i, uint32_t k, uint32_t t, uint32_t n){
+	return m->weight[m->numLayers*(k+(t*n))+m->outputIndex];
+}
+
+float dsdb(float b){
+	if (b<0){
+		return -1;
+	}
+	return 1;
+}
+
+float modelOptimizeOutputParams(Model* m, uint32_t k, uint32_t n, uint32_t ni, float ok, float ek){
+	float dl = callLossFunctionDerivative(m->lossFunction, n, ok, ek);
+	float da = callActivationFunctionDerivative(m->outputActivation, m->sums[m->outputIndex][k]);
+	float deltaB = dl*da*dsdb(m->bias[m->outputIndex][k]);
+	uint32_t t;
+	for (t=0;t<ni;++t){
+		float deltaW = dl*da*dsdw(m, m->outputIndex-1,t);
+		m->weight[m->numLayers*(k+(t*n))+m->outputIndex] += LEARNING_RATE*deltaW;
+		m->bias[m->outputIndex][k] += LEARNING_RATE*deltaB;
+	}
+	return da*m->losses[k];
+}
+
+void modelBackPropogateLayer(Model* m, float sumO, uint32_t i, uint32_t n, uint32_t ni){
+	uint32_t k, t;
+	for (k=0;k<n;++k){
+		float da = callActivationFunctionDerivative(m->hiddenActivation, m->sums[i][k]);
+		float db = dsdb(m->bias[i][k]);
+		for (t=0;t<ni;++t){
+			float ds = dsdo(m, i,k,t,ni);
+			float deltaB = sumO*da*ds*db;
+			float deltaW = sumO*da*ds*dsdw(m, i-1, t);
+			m->weight[m->numLayers*(k+(t*n))+i] += LEARNING_RATE*deltaW;
+			m->bias[i][k] += LEARNING_RATE*deltaB;
+		}
+	}
 }
 
 void gradientDescent(Model* m, float* input, float* expected, float* output){
-	uint32_t n = m->numNodes[m->outputIndex];
-	float dx = dldw(input, expected, output, n);
-	updateWeights(m, dx);
-	dx = dldb(expected, output, n);
-	updateBiases(m, dx);
-	//TODO fix this, it does the opposite of optimize
-}
-
-void updateWeights(Model* m, float dx){
-	uint32_t i, k, t, n, index;
-	uint32_t n0 = m->numNodes[0];
-	for (i = 1;i<m->numLayers;++i){
-		n = m->numNodes[i];
-		for (k = 0;k<n;++k){
-			for (t = 0;t<n0;++t){
-				index = m->numLayers*(k+(t*n)+i-1);
-				m->weight[index] -= LEARNING_RATE*dx;
-			}
-		}
-		n0=n;
+	uint32_t n, ni, no, i, k, t, j;
+	n = m->numNodes[m->outputIndex];
+	ni = m->numNodes[m->outputIndex-1];
+	float sumO = 0.0;
+	for (k = 0;k<n;++k){
+		sumO += modelOptimizeOutputParams(m, k, n, ni, output[k], expected[k]);
+	}
+	n = m->numNodes[m->outputIndex-1];
+	for (i=m->outputIndex-1;i>0;--i){
+		ni = m->numNodes[i-1];
+		modelBackPropogateLayer(m, sumO, i, n, ni);
+		n = ni;
 	}
 }
 
-void updateBiases(Model* m, float dx){
-	uint32_t i, k, n;
-	for (i = 1;i<m->numLayers;++i){
-		n = m->numNodes[i];
-		for (k = 0;k<n;++k){
-			m->bias[i][k] -= LEARNING_RATE*dx;
-		}
+float callLossFunctionDerivative(uint32_t function, uint32_t n, float x, float y){
+	switch(function){
+		case MAE:
+			return dldxMeanAbsoluteError(n, x, y);
+		break;
+		case MSE:
+			return dldxMeanSquaredError(n, x, y);
+		break;
+		case MBE:
+			return dldxMeanBiasError(n, x, y);
+		break;
+		case MSLE:
+			return dldxMeanSquaredLogError(n, x, y);
+		break;
+		case HUBER:
+			return dldxHuber(n, x, y);
+		break;
+		case BINARY_CROSS_ENTROPY:
+			return dldxBinaryCrossEntropy(n, x, y);
+		break;
+		case HINGE:
+			return dldxHinge(n, x, y);
+		break;
 	}
+	return 1;
 }
 
-float dldw(float* input, float* expected, float* output, uint32_t n){
-	float s = 0;
-	uint32_t i;
-	for (i = 0;i<n;++i){
-		s+=input[i]+(expected[i]-output[i]);
+float callActivationFunctionDerivative(uint32_t function, float x){
+	switch(function){
+		case SIGMOID:
+			return ddxSigmoid(x);
+		break;
+		case RELU:
+			return ddxReLu(x);
+		break;
+		case RELU_LEAKY:
+			return ddxReLuLeaky(x);
+		break;
+		case TANH:
+			return ddxTanH(x);
+		break;
 	}
-	return (2/n)*s;
-}
-	
-float dldb(float* expected, float* output, uint32_t n){
-	float s = 0;
-	uint32_t i;
-	for (i = 0;i<n;++i){
-		s += (expected[i]-output[i]);
-	}
-	return (2/n)*s;
+	return 1;
 }
 
 DataSet* readDataSet(const int8_t* fileName){
