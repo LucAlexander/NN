@@ -16,7 +16,7 @@ void modelSetup(Model* m, uint32_t n, ...){
 	memset(m->numNodes, 0, sizeof(m->numNodes));
 	memset(m->node, 0, sizeof(m->node));
 	memset(m->bias, 0, sizeof(m->bias));
-	memset(m->sums, 0, sizeof(m->sums));
+	memset(m->delta, 0, sizeof(m->delta));
 	memset(m->losses, 0, sizeof(m->losses));
 	m->weightInit = HE_UNIFORM;
 	m->hiddenActivation = RELU;
@@ -91,14 +91,20 @@ void modelClose(Model* m){
 }
 
 void modelTrain(Model* m, DataSet* d){
-	uint32_t i;
+	uint32_t i, batch;
 	clock_t timer = clock();
 	for (i=0;i<d->n;++i){
 		clock_t timeCurrent = clock();
 		modelPass(m, d->X[i], d->Y[i]);
-		float currentTime = (double)clock()-timeCurrent;
-		float totalTime = (double)clock()-timer;
-		if (i%500==0) printf("completed pass %u in %.0fms Total Elapsed Time: %.0fms | Loss: %.2f\n",i,(currentTime/CLOCKS_PER_SEC)*1000,(totalTime/CLOCKS_PER_SEC)*1000,m->loss);
+		if ((i+1)%BATCH_SIZE==0||BATCH_SIZE<1){
+			modelBackpropogation(m, d->Y[i]);
+			modelUpdateWeights(m, d->X[i]);
+			float currentTime = (double)clock()-timeCurrent;
+			float totalTime = (double)clock()-timer;
+			batch = i/BATCH_SIZE;
+		       	printf("BATCH %u ON PASS %u | TIME %.0fms TOTAL TIME %.0fms | LOSS %f\n", batch, i, (currentTime/CLOCKS_PER_SEC)*1000, (totalTime/CLOCKS_PER_SEC)*1000, m->loss);
+			printf("\tIO [ %f, %f ] | TARGET %f\n", d->X[i][0], m->node[m->outputIndex][0], d->Y[i][0]);
+		}
 	}
 	closeDataSet(d);
 }
@@ -113,11 +119,8 @@ void modelPass(Model* m, float input[], float expectedOutput[]){
 		n0 = n;
 	}
 	float output[n];
-	memcpy(output, m->node[n], sizeof(float)*n);
+	memcpy(output, m->node[m->outputIndex], sizeof(float)*n);
 	m->loss = modelCallLossFunction(m->lossFunction, m->losses, n, output, expectedOutput);
-	// TODO MULTITHREAD WHEN IT WORKS
-	// TODO FIX IT
-	gradientDescent(m, input, expectedOutput, output);
 }
 
 void modelNodesPass(Model* m, uint32_t i, uint32_t n, uint32_t n0){
@@ -170,7 +173,6 @@ void* modelNodeThread(void* args){
 	pthread_mutex_lock(lock);
 	nodeVal = modelCalculateNode(m, i, k, n, n0);
 	nodeVal += m->bias[i][k];
-	m->sums[i][k] = nodeVal;
 	m->node[i][k] = modelActivationFunction(m, nodeVal, i, n);
 	pthread_mutex_unlock(lock);
 	pthread_exit(NULL);
@@ -384,6 +386,13 @@ float minf(float a, float b){
 	return b;
 }
 
+float absf(float a){
+	if (a<0){
+		return a*-1;
+	}
+	return a;
+}
+
 int64_t max(int64_t a, int64_t b){
 	if (a<b){
 		return b;
@@ -402,7 +411,7 @@ float lossMeanAbsoluteError(uint32_t n, float* losses, float* output, float* exp
 	uint32_t i;
 	float sum = 0.0;
 	for (i = 0;i<n;++i){
-		float a = abs(output[i]-expected[i]);
+		float a = absf(output[i]-expected[i]);
 		sum += a;
 		losses[i] = a/n;
 	}
@@ -447,13 +456,13 @@ float lossHuber(uint32_t n, float* losses, float* output, float* expected){
 	float sum = 0.0;
 	for (i = 0;i<n;++i){
 		float a = expected[i]-output[i];
-		if (abs(a) <= HUBER_DELTA){
+		if (absf(a) <= HUBER_DELTA){
 			float b = 0.5*pow(a, 2);
 			sum += b;
 			losses[i] = b/n;
 			continue;
 		}
-		float b = HUBER_DELTA*(abs(a)-(0.5*HUBER_DELTA));
+		float b = HUBER_DELTA*(absf(a)-(0.5*HUBER_DELTA));
 		sum += b;
 		losses[i] = b/n;
 	}
@@ -487,7 +496,7 @@ float lossHinge(uint32_t n, float* losses, float* output, float* expected){
 }
 
 float dldxMeanAbsoluteError(uint32_t n, float x, float y){
-	return (x-y)/(n*abs(x-y));
+	return (x-y)/(n*absf(x-y));
 }
 
 float dldxMeanSquaredError(uint32_t n, float x, float y){
@@ -503,7 +512,7 @@ float dldxMeanSquaredLogError(uint32_t n, float x, float y){
 }
 
 float dldxHuber(uint32_t n, float x, float y){
-	float a = abs(y-x);
+	float a = absf(y-x);
 	if (a<=HUBER_DELTA){
 		return x-y;
 	}
@@ -518,62 +527,45 @@ float dldxHinge(uint32_t n, float x, float y){
 	return max(0, -x)/n;
 }
 
-float dsdw(Model* m, uint32_t i, uint32_t k){
-	return m->node[i][k];
-}
-
-float dsdo(Model* m, uint32_t i, uint32_t k, uint32_t t, uint32_t n){
-	return m->weight[m->numLayers*(k+(t*n))+m->outputIndex];
-}
-
-float dsdb(float b){
-	if (b<0){
-		return -1;
-	}
-	return 1;
-}
-
-float modelOptimizeOutputParams(Model* m, uint32_t k, uint32_t n, uint32_t ni, float ok, float ek){
-	float dl = callLossFunctionDerivative(m->lossFunction, n, ok, ek);
-	float da = callActivationFunctionDerivative(m->outputActivation, m->sums[m->outputIndex][k]);
-	float deltaB = dl*da*dsdb(m->bias[m->outputIndex][k]);
-	uint32_t t;
-	for (t=0;t<ni;++t){
-		float deltaW = dl*da*dsdw(m, m->outputIndex-1,t);
-		m->weight[m->numLayers*(k+(t*n))+m->outputIndex] += LEARNING_RATE*deltaW;
-		m->bias[m->outputIndex][k] += LEARNING_RATE*deltaB;
-	}
-	return da*m->losses[k];
-}
-
-void modelBackPropogateLayer(Model* m, float sumO, uint32_t i, uint32_t n, uint32_t ni){
+void modelGenerateHiddenDeltas(Model* m, uint32_t i, uint32_t n, uint32_t ni){
 	uint32_t k, t;
-	for (k=0;k<n;++k){
-		float da = callActivationFunctionDerivative(m->hiddenActivation, m->sums[i][k]);
-		float db = dsdb(m->bias[i][k]);
-		for (t=0;t<ni;++t){
-			float ds = dsdo(m, i,k,t,ni);
-			float deltaB = sumO*da*ds*db;
-			float deltaW = sumO*da*ds*dsdw(m, i-1, t);
-			m->weight[m->numLayers*(k+(t*n))+i] += LEARNING_RATE*deltaW;
-			m->bias[i][k] += LEARNING_RATE*deltaB;
+	for (k = 0;k<n;++k){
+		float error = 0.0;
+		for (t = 0;t<ni;++t){
+			error += m->weight[m->numLayers*(k+(t*n))+i]*m->delta[i+1][t];
 		}
+		m->delta[i][k] = error*callActivationFunctionDerivative(m->hiddenActivation, m->node[i][k]);
 	}
 }
 
-void gradientDescent(Model* m, float* input, float* expected, float* output){
-	uint32_t n, ni, no, i, k, t, j;
+void modelBackpropogation(Model* m, float* expected){
+	uint32_t i, n, ni;
 	n = m->numNodes[m->outputIndex];
-	ni = m->numNodes[m->outputIndex-1];
-	float sumO = 0.0;
-	for (k = 0;k<n;++k){
-		sumO += modelOptimizeOutputParams(m, k, n, ni, output[k], expected[k]);
+	for (i = 0;i<n;++i){
+		float error = m->node[m->outputIndex][i]-expected[i];
+		m->delta[m->outputIndex][i] = error*callActivationFunctionDerivative(m->outputActivation, m->node[m->outputIndex][i]);
 	}
-	n = m->numNodes[m->outputIndex-1];
+	ni = n;
 	for (i=m->outputIndex-1;i>0;--i){
-		ni = m->numNodes[i-1];
-		modelBackPropogateLayer(m, sumO, i, n, ni);
-		n = ni;
+		n = m->numNodes[i];
+		modelGenerateHiddenDeltas(m, i, n, ni);
+		ni = n;
+	}
+}
+
+void modelUpdateWeights(Model* m, float* input){
+	uint32_t i, k, t, n, ni;
+	float d;
+	ni = m->numNodes[0];
+	for (i = 1;i<m->numLayers;++i){
+		n = m->numNodes[i];
+		for (k = 0;k<n;++k){
+			d = m->delta[i][k] * LEARNING_RATE;
+			for (t = 0;t<ni;++t){
+				m->weight[m->numLayers*(k+(t*n))+i-1] -= (d * m->node[i-1][t]);
+			}
+		}
+		ni = n;
 	}
 }
 

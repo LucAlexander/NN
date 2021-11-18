@@ -11,6 +11,7 @@
 #define HUBER_DELTA 1.35
 #define LEARNING_RATE 0.0001
 #define READ_BUFFER_SIZE 1024
+#define BATCH_SIZE 1
 
 typedef struct Model{
 	uint32_t numLayers;
@@ -18,7 +19,7 @@ typedef struct Model{
 	uint32_t numNodes[MAX_LAYERS];
 	float node[MAX_LAYERS][MAX_NODES];
 	float bias[MAX_LAYERS][MAX_NODES];
-	float sums[MAX_LAYERS][MAX_NODES];
+	float delta[MAX_LAYERS][MAX_NODES];
 	float losses[MAX_NODES];
 	/* WEIGHT DIMENSIONS
 	 * layers x nodes in layer x input weights
@@ -129,6 +130,7 @@ float activationTanH(float x);
 
 float maxf(float a, float b);
 float minf(float a, float b);
+float absf(float a);
 
 int64_t max(int64_t a, int64_t b);
 int64_t min(int64_t a, int64_t b);
@@ -160,15 +162,11 @@ float ddxReLu(float x);
 float ddxReLuLeaky(float x);
 float ddxTanH(float x);
 
-// DERIVATIVE OF SUM WRT Weight/Bias/previous output
-float dsdw(Model* m, uint32_t i, uint32_t k);
-float dsdo(Model* m, uint32_t i, uint32_t k, uint32_t t, uint32_t n);
-float dsdb(float b);
-
-void gradientDescent(Model* m, float* input, float* expected, float* output);
+// ERROR PROPOGATION
 float callLossFunctionDerivative(uint32_t function, uint32_t n, float x, float y);
 float callActivationFunctionDerivative(uint32_t function, float x);
-float modelOptimizeOutputParams(Model* m, uint32_t k, uint32_t n, uint32_t ni, float ok, float ek);
-void modelBackPropogateLayer(Model* m, float sumO, uint32_t i, uint32_t n, uint32_t ni);
+void modelBackpropogation(Model* m, float* expected);
+void modelGenerateHiddenDeltas(Model* m, uint32_t i, uint32_t n, uint32_t ni);
+void modelUpdateWeights(Model* m, float* input);
 
 #endif

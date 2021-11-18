@@ -8,7 +8,7 @@ int main(void){
 	Model m;
 	printf("size of Model : %.2fkb\n", sizeof(m)/1000.0);
 	modelSetup(&m, 4, 1, 16, 16, 1);
-	modelSetFunctions(&m, XAVIER_UNIFORM, RELU, 0, RELU, 0, MSE);
+	modelSetFunctions(&m, XAVIER_UNIFORM, RELU, 0, RELU, 0, MAE);
 	printf("Model Setup completed\n");
 	modelTrain(&m, readDataSet("squares.txt"));
 	modelClose(&m);
